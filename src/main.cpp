@@ -230,7 +230,7 @@ void vSensorTask(void *pvParameters) {
 
     for (;;) {
         // 1. Read sensors (requires I2C mutex)
-        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
             if (max30102Enabled) {
                 hrSensor.readRaw(localRawIr, localRawRed);
                 localBpm = hrSensor.getBPM();
@@ -400,7 +400,7 @@ void setup() {
 
     // Initialize I2C bus
     Wire.begin(I2C_SDA, I2C_SCL);
-    Wire.setClock(100000);
+    Wire.setClock(400000);
     Wire.setTimeOut(50); // Prevent I2C calls from hanging
 
     if (oled.begin(&Wire)) {
@@ -411,7 +411,7 @@ void setup() {
     }    
 
     // Initialize MAX30102
-    if (hrSensor.begin(Wire, 100000)) {
+    if (hrSensor.begin(Wire, 400000)) {
         Serial.println("MAX30102 initialized.");
         max30102Enabled = true;
     } else {
@@ -507,7 +507,7 @@ void loop() {
                     recoverI2CBus(I2C_SDA, I2C_SCL);
                     
                     Wire.begin(I2C_SDA, I2C_SCL);
-                    Wire.setClock(100000);
+                    Wire.setClock(400000);
                     Wire.setTimeOut(50);
                     
                     // Re-initialize active devices
@@ -515,7 +515,7 @@ void loop() {
                         oled.begin(&Wire);
                     }
                     if (max30102Enabled) {
-                        hrSensor.begin(Wire, 100000);
+                        hrSensor.begin(Wire, 400000);
                     }
                     if (bmi160Enabled) {
                         if (fallSensor.begin(&Wire, activeBmi160Addr)) {
