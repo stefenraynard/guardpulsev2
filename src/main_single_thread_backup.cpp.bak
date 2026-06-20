@@ -1,0 +1,398 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+#include "oled.h"
+#include "max30102_agent.h"
+#include "bmi160_agent.h"
+
+// Provide the token generation process info
+#include "addons/TokenHelper.h"
+// Provide the RTDB payload printing info
+#include "addons/RTDBHelper.h"
+
+#define I2C_SDA 8
+#define I2C_SCL 9
+
+// WiFi credentials
+#define WIFI_SSID "CEIOT"
+#define WIFI_PASSWORD "CE-1OT@!"
+
+// Firebase credentials (from Firebase Console → Project Settings)
+#define API_KEY "AIzaSyCfV1SKtW8JPujExcmQbfmMZktto_yBJP4"
+#define DATABASE_URL "https://iotmade-default-rtdb.asia-southeast1.firebasedatabase.app"
+
+// Firebase objects
+FirebaseData fbdo;
+FirebaseData fbdo_upload;
+FirebaseAuth auth;
+FirebaseConfig config;
+OledDisplay oled;
+
+Max30102Agent hrSensor;
+Bmi160Agent fallSensor;
+
+bool firebaseReady = false;
+unsigned long sendDataPrevMillis = 0;
+
+// Device identity variables
+String deviceUID = "";
+String pairingCode = "";
+String ownerUID = "";
+
+// Peripheral health tracking
+bool oledEnabled = false;
+bool max30102Enabled = false;
+bool bmi160Enabled = false;
+uint8_t activeBmi160Addr = 0x68;
+
+void setupWiFi() {
+    Serial.println("Resetting WiFi...");
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(500);
+
+    WiFi.mode(WIFI_STA);
+    
+    // Set WiFi output power to 10 dBm to stabilize signal and avoid I2C interference.
+    // 10 dBm = 40 (0.25 dBm steps)
+    WiFi.setTxPower((wifi_power_t)40);
+
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("Connecting to WiFi");
+    unsigned long startMs = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - startMs < 15000)) {
+        Serial.print(".");
+        delay(300);
+    }
+    Serial.println();
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.print("Connected with IP: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("WiFi connection failed (timeout).");
+    }
+}
+
+void setupFirebase() {
+    // Ensure time is synchronized before initializing Firebase to avoid SSL and JWT validation errors
+    Serial.print("Syncing time via NTP");
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    time_t now = time(nullptr);
+    int retries = 0;
+    while (now < 1000000000 && retries < 20) {
+        delay(250);
+        Serial.print(".");
+        now = time(nullptr);
+        retries++;
+    }
+    Serial.println();
+    if (now > 1000000000) {
+        Serial.printf("Time synchronized successfully. Epoch: %ld\n", (long)now);
+    } else {
+        Serial.println("WARNING: Time synchronization timed out! Firebase operations might fail.");
+    }
+
+    config.api_key = API_KEY;
+    config.database_url = DATABASE_URL;
+
+    // Anonymous sign-in
+    if (Firebase.signUp(&config, &auth, "", "")) {
+        Serial.println("Firebase sign-up OK");
+        firebaseReady = true;
+    } else {
+        Serial.printf("Firebase sign-up error: %s\n", config.signer.signupError.message.c_str());
+    }
+
+    config.token_status_callback = tokenStatusCallback;
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+}
+
+void checkDeviceStatus() {
+    if (WiFi.status() != WL_CONNECTED || !firebaseReady || !Firebase.ready()) {
+        return;
+    }
+
+    String ownerPath = "/devices/" + deviceUID + "/ownerUID";
+    if (Firebase.getString(fbdo, ownerPath)) {
+        String val = fbdo.stringData();
+        String dataType = fbdo.dataType();
+        
+        if (dataType == "null" || val.length() == 0 || val == "null") {
+            ownerUID = "";
+            if (dataType == "null" || val.length() == 0) {
+                Serial.println("[Firebase] Registering device...");
+                if (Firebase.setString(fbdo, ownerPath, "null") && 
+                    Firebase.setString(fbdo, "/devices/" + deviceUID + "/pairingCode", pairingCode)) {
+                    Serial.println("[Firebase] Device registered successfully.");
+                } else {
+                    Serial.printf("[Firebase Error] Registration failed: %s\n", fbdo.errorReason().c_str());
+                }
+            }
+        } else {
+            ownerUID = val;
+            // One-time synchronous test write to diagnose any silent background failures
+            static bool testedWrite = false;
+            if (!testedWrite) {
+                testedWrite = true;
+                Serial.printf("[Firebase Test] Synchronous test write to /users/%s/devices_data/%s/sensor_data...\n", ownerUID.c_str(), deviceUID.c_str());
+                FirebaseJson testJson;
+                testJson.set("test_field", "working");
+                String testPath = "/users/" + ownerUID + "/devices_data/" + deviceUID + "/sensor_data";
+                if (Firebase.setJSON(fbdo, testPath, testJson)) {
+                    Serial.println("[Firebase Test] Synchronous test write SUCCEEDED!");
+                } else {
+                    Serial.printf("[Firebase Test] Synchronous test write FAILED: %s\n", fbdo.errorReason().c_str());
+                }
+            }
+        }
+    } else {
+        String err = fbdo.errorReason();
+        if (err.indexOf("path not exist") != -1 || err.indexOf("not found") != -1 || fbdo.httpCode() == 404) {
+            ownerUID = "";
+            Serial.println("[Firebase] Path not found. Registering device...");
+            if (Firebase.setString(fbdo, ownerPath, "null") && 
+                Firebase.setString(fbdo, "/devices/" + deviceUID + "/pairingCode", pairingCode)) {
+                Serial.println("[Firebase] Device registered successfully.");
+            } else {
+                Serial.printf("[Firebase Error] Registration failed: %s\n", fbdo.errorReason().c_str());
+            }
+        } else {
+            Serial.printf("[Firebase Error] checkDeviceStatus failed: %s\n", err.c_str());
+            ownerUID = "";
+        }
+    }
+}
+
+void recoverI2CBus(int sdaPin, int sclPin) {
+    pinMode(sdaPin, INPUT_PULLUP);
+    pinMode(sclPin, INPUT_PULLUP);
+    delayMicroseconds(10);
+    
+    pinMode(sclPin, OUTPUT);
+    
+    // Toggle SCL up to 9 times if SDA is held low
+    for (int i = 0; i < 9; i++) {
+        if (digitalRead(sdaPin) == HIGH) {
+            break; // SDA has been released
+        }
+        digitalWrite(sclPin, LOW);
+        delayMicroseconds(10);
+        digitalWrite(sclPin, HIGH);
+        delayMicroseconds(10);
+    }
+    
+    // Generate a manual STOP condition
+    pinMode(sdaPin, OUTPUT);
+    digitalWrite(sdaPin, LOW);
+    delayMicroseconds(10);
+    
+    pinMode(sclPin, OUTPUT);
+    digitalWrite(sclPin, HIGH);
+    delayMicroseconds(10);
+    
+    digitalWrite(sdaPin, HIGH);
+    delayMicroseconds(10);
+    
+    // Return pins to floating state before Wire resets
+    pinMode(sdaPin, INPUT);
+    pinMode(sclPin, INPUT);
+}
+
+void setup() {
+    // Turn off WiFi immediately at startup to conserve power and stabilize the LDO regulator
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(200);
+
+    Serial.begin(115200);
+    unsigned long serialStart = millis();
+    while (!Serial && (millis() - serialStart < 3000)) {
+        delay(10);
+    }
+    delay(3000); // Allow USB CDC connection to enumerate and connect on host
+
+    Serial.println("Booting GuardPulse application...");
+
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(100000);
+    Wire.setTimeOut(50); // Set 50ms timeout to prevent I2C API calls from hanging
+    
+    if (oled.begin(&Wire)) {
+        Serial.println("OLED initialized.");
+        oledEnabled = true;
+    } else {
+        Serial.println("OLED initialization failed.");
+    }    
+
+    // Initialize MAX30102
+    if (hrSensor.begin(Wire, 100000)) {
+        Serial.println("MAX30102 initialized.");
+        max30102Enabled = true;
+    } else {
+        Serial.println("MAX30102 initialization failed.");
+    }
+
+    // Try BMI160 at address 0x68. If that fails, try address 0x69.
+    bool bmiSuccess = fallSensor.begin(&Wire, 0x68);
+    if (bmiSuccess) {
+        activeBmi160Addr = 0x68;
+    } else {
+        bmiSuccess = fallSensor.begin(&Wire, 0x69);
+        if (bmiSuccess) {
+            activeBmi160Addr = 0x69;
+        }
+    }
+    if (bmiSuccess) {
+        Serial.println("BMI160 initialized.");
+        bmi160Enabled = true;
+        fallSensor.setPowerModes(BMI160_ACCEL_LOWPOWER_MODE, BMI160_GYRO_SUSPEND_MODE);
+    } else {
+        Serial.println("BMI160 initialization failed.");
+    }
+
+    setupWiFi();
+    
+    String rawMac = WiFi.macAddress();
+    rawMac.replace(":", "");
+    rawMac.toUpperCase();
+    deviceUID = rawMac;
+    if (deviceUID.length() >= 6) {
+        pairingCode = deviceUID.substring(deviceUID.length() - 6);
+    } else {
+        pairingCode = deviceUID;
+    }
+    Serial.print("Device UID: ");
+    Serial.println(deviceUID);
+    Serial.print("Pairing Code: ");
+    Serial.println(pairingCode);
+
+    if (WiFi.status() == WL_CONNECTED) {
+        setupFirebase();
+        checkDeviceStatus();
+    }
+}
+
+void loop() {
+    if (firebaseReady) {
+        Firebase.ready();
+    }
+
+    // Self-healing I2C recovery check every 1 second
+    static unsigned long lastI2CCheck = 0;
+    if (millis() - lastI2CCheck > 1000) {
+        lastI2CCheck = millis();
+        
+        // Select a device address that is actually supposed to be present on the I2C bus
+        uint8_t checkAddr = 0;
+        if (oledEnabled) {
+            checkAddr = 0x3C;
+        } else if (bmi160Enabled) {
+            checkAddr = activeBmi160Addr;
+        } else if (max30102Enabled) {
+            checkAddr = 0x57;
+        }
+        
+        if (checkAddr != 0) {
+            Wire.beginTransmission(checkAddr);
+            uint8_t err = Wire.endTransmission();
+            if (err != 0 && err != 2) { // 2 is NACK (not present), recover only on timeouts (5) or bus errors (4)
+                Serial.printf("[I2C] Bus/Sensor lock detected (err=%d). Recovering and re-initializing...\n", err);
+                Wire.end();
+                recoverI2CBus(I2C_SDA, I2C_SCL);
+                
+                Wire.begin(I2C_SDA, I2C_SCL);
+                Wire.setClock(100000);
+                Wire.setTimeOut(50);
+                
+                // Re-initialize active devices
+                if (oledEnabled) {
+                    oled.begin(&Wire);
+                }
+                if (max30102Enabled) {
+                    hrSensor.begin(Wire, 100000);
+                }
+                if (bmi160Enabled) {
+                    if (fallSensor.begin(&Wire, activeBmi160Addr)) {
+                        fallSensor.setPowerModes(BMI160_ACCEL_LOWPOWER_MODE, BMI160_GYRO_SUSPEND_MODE);
+                    }
+                }
+            }
+        }
+    }
+
+    // Continuously read/poll MAX30102 raw values if enabled
+    uint32_t rawIr = 0, rawRed = 0;
+    if (max30102Enabled) {
+        hrSensor.readRaw(rawIr, rawRed);
+    }
+
+    // Read BMI160 filtered and raw data every 10ms (100Hz ODR) for LPF and state machine stability if enabled
+    static GyroData_t gyroData = {0};
+    static unsigned long lastBMIPoll = 0;
+    if (bmi160Enabled && (millis() - lastBMIPoll >= 10)) {
+        lastBMIPoll = millis();
+        fallSensor.readData(&gyroData);
+    }
+
+    // Upload data asynchronously to Firebase every 1.5 seconds
+    if (millis() - sendDataPrevMillis > 1500) {
+        sendDataPrevMillis = millis();
+
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!firebaseReady) {
+                Serial.println("[Firebase] Initializing Firebase dynamically...");
+                setupFirebase();
+            }
+            checkDeviceStatus();
+        }
+
+        float bpm = max30102Enabled ? hrSensor.getBPM() : 0.0f;
+        float spo2 = max30102Enabled ? hrSensor.getSpO2() : 0.0f;
+
+        // Print debug log
+        Serial.printf("[DEBUG] BPM: %.2f, SpO2: %.2f, Fall: %d | Accel: X=%.2fg, Y=%.2fg, Z=%.2fg, Mag=%.2fg | Gyro: X=%.2f, Y=%.2f, Z=%.2f | Raw IR: %u, Raw Red: %u, BufLen: %d | Owner: %s\n",
+                      bpm, spo2, gyroData.isFall, gyroData.accelX_g, gyroData.accelY_g, gyroData.accelZ_g, gyroData.accel_g,
+                      gyroData.gyroX_dps, gyroData.gyroY_dps, gyroData.gyroZ_dps, rawIr, rawRed, max30102Enabled ? hrSensor.getBufferLength() : 0, ownerUID.c_str());
+
+        if (firebaseReady && Firebase.ready() && ownerUID != "" && ownerUID != "null") {
+            FirebaseJson json;
+            json.set("bpm", bpm);
+            json.set("spo2", spo2);
+            json.set("fall_detected", gyroData.isFall);
+            json.set("accel_x", gyroData.accelX_g);
+            json.set("accel_y", gyroData.accelY_g);
+            json.set("accel_z", gyroData.accelZ_g);
+            json.set("accel_magnitude", gyroData.accel_g);
+            json.set("gyro_x", gyroData.gyroX_dps);
+            json.set("gyro_y", gyroData.gyroY_dps);
+            json.set("gyro_z", gyroData.gyroZ_dps);
+            json.set("timestamp", (int)millis());
+            
+            String uploadPath = "/users/" + ownerUID + "/devices_data/" + deviceUID + "/sensor_data";
+            if (Firebase.setJSONAsync(fbdo_upload, uploadPath, json)) {
+                Serial.println("[Firebase] Async upload started.");
+            } else {
+                Serial.printf("[Firebase Error] %s\n", fbdo_upload.errorReason().c_str());
+            }
+        }
+    }
+
+    // Update OLED: if unpaired (ownerUID empty or "null"), show pairing code; else if fall detected, show emergency screen; else if no finger (IR < 20000), show "Place finger on sensor..."; else, show vitals (BPM, SpO2)
+    static unsigned long lastOledMillis = 0;
+    if (oledEnabled && (millis() - lastOledMillis > 500)) {
+        lastOledMillis = millis();
+        if (ownerUID == "" || ownerUID == "null") {
+            String msg = "Pairing Code:\n" + pairingCode;
+            oled.showMessage(msg.c_str());
+        } else if (bmi160Enabled && gyroData.isFall) {
+            oled.showEmergency();
+        } else if (max30102Enabled && rawIr < 20000) {
+            oled.showMessage("Please wear /nthe device...");
+        } else {
+            float bpm = max30102Enabled ? hrSensor.getBPM() : 0.0f;
+            float spo2 = max30102Enabled ? hrSensor.getSpO2() : 0.0f;
+            oled.showVitals(bpm, spo2);
+        }
+    }
+}
