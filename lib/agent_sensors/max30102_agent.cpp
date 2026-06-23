@@ -57,12 +57,12 @@ bool Max30102Agent::begin(TwoWire &wirePort, uint32_t i2cSpeed) {
     // 6. Mode Configuration (SpO2 mode)
     if (!maxim_max30102_write_reg(0x09, 0x03)) { Serial.println("[MAX30102] FAIL: mode config"); return false; }
     
-    // 7. SpO2 Configuration (ADC range 16384nA, 100Hz sample rate, 411us pulse width)
-    if (!maxim_max30102_write_reg(0x0A, 0x67)) { Serial.println("[MAX30102] FAIL: spo2 config"); return false; }
+    // 7. SpO2 Configuration (ADC range 16384nA, 100Hz sample rate, 215us pulse width)
+    if (!maxim_max30102_write_reg(0x0A, 0x66)) { Serial.println("[MAX30102] FAIL: spo2 config"); return false; }
     
-    // 8. LED current (Red set to 0x5F (~19mA) to reduce skin reflection, IR set to 0xAF (~35mA) for deep penetration)
-    if (!maxim_max30102_write_reg(0x0C, 0x5F)) { Serial.println("[MAX30102] FAIL: LED1 PA"); return false; }
-    if (!maxim_max30102_write_reg(0x0D, 0xAF)) { Serial.println("[MAX30102] FAIL: LED2 PA"); return false; }
+    // 8. LED current (Red set to 0xDF (~44mA) for deep penetration, IR set to 0x9F (~32mA) to balance signals)
+    if (!maxim_max30102_write_reg(0x0C, 0xDF)) { Serial.println("[MAX30102] FAIL: LED1 PA"); return false; }
+    if (!maxim_max30102_write_reg(0x0D, 0x9F)) { Serial.println("[MAX30102] FAIL: LED2 PA"); return false; }
     
     // 9. Pilot PA
     if (!maxim_max30102_write_reg(0x10, 0x7F)) { Serial.println("[MAX30102] FAIL: pilot PA"); return false; }
