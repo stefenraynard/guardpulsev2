@@ -181,7 +181,7 @@ bool Max30102Agent::readRaw(uint32_t &ir, uint32_t &red) {
                     
                     rf_heart_rate_and_oxygen_saturation(cleanIrBuffer, 100, cleanRedBuffer, &n_spo2, &ch_spo2_valid, &n_heart_rate, &ch_hr_valid, &ratio, &correl);
                     
-                    Serial.printf("[RF debug] Correlation: %.3f (min: 0.8), Ratio: %.3f, Raw HR: %d (valid: %d), Raw SpO2: %.2f (valid: %d)\n",
+                    Serial.printf("[RF debug] Correlation: %.3f (min: 0.55), Ratio: %.3f, Raw HR: %d (valid: %d), Raw SpO2: %.2f (valid: %d)\n",
                                   correl, ratio, n_heart_rate, ch_hr_valid, n_spo2, ch_spo2_valid);
                     
                     if (ch_hr_valid) {

@@ -14,8 +14,8 @@
 #define I2C_SCL 9
 
 // WiFi credentials
-#define WIFI_SSID "CEIOT"
-#define WIFI_PASSWORD "CE-1OT@!"
+#define WIFI_SSID "E948"
+#define WIFI_PASSWORD "123456789"
 
 // Firebase credentials (from Firebase Console → Project Settings)
 #define API_KEY "AIzaSyCfV1SKtW8JPujExcmQbfmMZktto_yBJP4"
