@@ -53,7 +53,7 @@ const float sum_X2 = 83325; // WARNING: you MUST recalculate this sum if you cha
 #define MIN_HR 40   // Minimal heart rate. To eliminate erroneous signals, calculated HR should never be lower than this number.
 // Minimal ratio of two autocorrelation sequence elements: one at a considered lag to the one at lag 0.
 // Good quality signals must have such ratio greater than this minimum.
-const float min_autocorrelation_ratio = 0.35;
+const float min_autocorrelation_ratio = 0.25;
 // Pearson correlation between red and IR signals.
 // Good quality signals must have their correlation coefficient greater than this minimum.
 const float min_pearson_correlation = 0.7;
