@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <FirebaseESP32.h>
+#include <lwip/dns.h>
 #include "oled.h"
 #include "max30102_agent.h"
 #include "bmi160_agent.h"
@@ -14,8 +15,8 @@
 #define I2C_SCL 9
 
 // WiFi credentials
-#define WIFI_SSID "TelAviv"
-#define WIFI_PASSWORD "123456789"
+#define WIFI_SSID "@student.umn.ac.id"
+#define WIFI_PASSWORD "sebentar"
 
 // Firebase credentials (from Firebase Console → Project Settings)
 #define API_KEY "AIzaSyCfV1SKtW8JPujExcmQbfmMZktto_yBJP4"
@@ -69,6 +70,18 @@ struct SensorData_t {
 };
 SensorData_t sharedData;
 
+void setCustomDNS() {
+    ip_addr_t d1;
+    d1.type = IPADDR_TYPE_V4;
+    d1.u_addr.ip4.addr = (uint32_t)IPAddress(8, 8, 8, 8);
+    dns_setserver(0, &d1);
+
+    ip_addr_t d2;
+    d2.type = IPADDR_TYPE_V4;
+    d2.u_addr.ip4.addr = (uint32_t)IPAddress(1, 1, 1, 1);
+    dns_setserver(1, &d2);
+}
+
 void setupWiFi() {
     Serial.println("Resetting WiFi...");
     WiFi.disconnect(true, true);
@@ -79,9 +92,6 @@ void setupWiFi() {
     
     // Set WiFi output power to 10 dBm to stabilize signal and avoid I2C interference.
     WiFi.setTxPower((wifi_power_t)40);
-
-    // Configure public DNS servers (Google and Cloudflare) to prevent router DNS lookup issues
-    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
 
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.print("Connecting to WiFi");
@@ -94,6 +104,10 @@ void setupWiFi() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.print("Connected with IP: ");
         Serial.println(WiFi.localIP());
+
+        // Configure public DNS servers transparently via lwIP without overriding DHCP routing
+        setCustomDNS();
+        Serial.println("DNS servers set to 8.8.8.8 and 1.1.1.1");
     } else {
         Serial.println("WiFi connection failed (timeout).");
     }
@@ -339,6 +353,10 @@ void vFirebaseUploadTask(void *pvParameters) {
             if (!firebaseReady) {
                 Serial.println("[Firebase] Initializing Firebase dynamically...");
                 setupFirebase();
+
+                // Configure public DNS servers transparently via lwIP without overriding DHCP routing
+                setCustomDNS();
+                Serial.println("[Firebase] DNS servers set to 8.8.8.8 and 1.1.1.1");
             }
             checkDeviceStatus();
 
@@ -410,6 +428,16 @@ void vFirebaseUploadTask(void *pvParameters) {
                         }
                     }
                 }
+            }
+        } else {
+            // Wi-Fi is disconnected. Reset state and retry connection periodically in background
+            firebaseReady = false;
+            static int wifiRetryCount = 0;
+            wifiRetryCount++;
+            if (wifiRetryCount >= 10) { // Retry connection every 15 seconds (10 * 1.5s loop delay)
+                wifiRetryCount = 0;
+                Serial.println("[WiFi] Disconnected. Reconnecting to AP...");
+                WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
             }
         }
 
