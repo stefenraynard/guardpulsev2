@@ -84,9 +84,19 @@ void rf_heart_rate_and_oxygen_saturation(uint32_t *pun_ir_buffer, int32_t n_ir_b
     *ptr_y -= beta_red*x;
   }
   
-    // For SpO2 calculate RMS of both AC signals. In addition, pulse detector needs raw sum of squares for IR
+  // For SpO2 calculate RMS of both AC signals. In addition, pulse detector needs raw sum of squares for IR
   f_y_ac=rf_rms(an_y,n_ir_buffer_length,&f_red_sumsq);
   f_x_ac=rf_rms(an_x,n_ir_buffer_length,&f_ir_sumsq);
+
+  // Reject table readings or extremely weak static noise
+  if (f_x_ac < 80.0 || f_y_ac < 80.0) {
+    n_last_peak_interval = LOWEST_PERIOD;
+    *pn_heart_rate = -999;
+    *pch_hr_valid = 0;
+    *pn_spo2 = -999;
+    *pch_spo2_valid = 0;
+    return;
+  }
 
   // Calculate Pearson correlation between red and IR
   *correl=rf_Pcorrelation(an_x, an_y, n_ir_buffer_length)/sqrt(f_red_sumsq*f_ir_sumsq);

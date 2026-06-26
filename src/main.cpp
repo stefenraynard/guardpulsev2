@@ -15,8 +15,8 @@
 #define I2C_SCL 9
 
 // WiFi credentials
-#define WIFI_SSID "@student.umn.ac.id"
-#define WIFI_PASSWORD "sebentar"
+#define WIFI_SSID "Binus-Access 2"
+#define WIFI_PASSWORD "bentar ye"
 
 // Firebase credentials (from Firebase Console → Project Settings)
 #define API_KEY "AIzaSyCfV1SKtW8JPujExcmQbfmMZktto_yBJP4"
@@ -89,6 +89,7 @@ void setupWiFi() {
     delay(500);
 
     WiFi.mode(WIFI_STA);
+    WiFi.setAutoReconnect(true); // Native background auto-reconnection
     
     // Set WiFi output power to 10 dBm to stabilize signal and avoid I2C interference.
     WiFi.setTxPower((wifi_power_t)40);
@@ -96,7 +97,7 @@ void setupWiFi() {
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.print("Connecting to WiFi");
     unsigned long startMs = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - startMs < 15000)) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - startMs < 30000)) { // 30s timeout for enterprise network DHCP/handshakes
         Serial.print(".");
         delay(300);
     }
@@ -148,6 +149,13 @@ void setupFirebase() {
 }
 
 void checkDeviceStatus() {
+    static unsigned long lastCheckMs = 0;
+    unsigned long interval = (ownerUID == "" || ownerUID == "null") ? 5000 : 60000; // Poll every 5s if unpaired, every 60s if paired
+    if (millis() - lastCheckMs < interval) {
+        return;
+    }
+    lastCheckMs = millis();
+
     if (WiFi.status() != WL_CONNECTED || !firebaseReady || !Firebase.ready()) {
         return;
     }
@@ -434,9 +442,10 @@ void vFirebaseUploadTask(void *pvParameters) {
             firebaseReady = false;
             static int wifiRetryCount = 0;
             wifiRetryCount++;
-            if (wifiRetryCount >= 10) { // Retry connection every 15 seconds (10 * 1.5s loop delay)
+            if (wifiRetryCount >= 40) { // Retry connection every 60 seconds (40 * 1.5s loop delay)
                 wifiRetryCount = 0;
-                Serial.println("[WiFi] Disconnected. Reconnecting to AP...");
+                Serial.println("[WiFi] Connection lost. Triggering manual reconnect...");
+                WiFi.disconnect(); // Reset connection cleanly
                 WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
             }
         }
@@ -590,9 +599,6 @@ void setup() {
 }
 
 void loop() {
-    if (firebaseReady) {
-        Firebase.ready();
-    }
 
     // Self-healing I2C recovery check every 1 second (runs on main loopTask)
     static unsigned long lastI2CCheck = 0;
