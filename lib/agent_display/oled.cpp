@@ -77,11 +77,16 @@ void OledDisplay::showMessage(const char *message) {
 
 void OledDisplay::showEmergency() {
     display.clearDisplay();
-    display.setTextSize(2);
-    display.setCursor(0, 20);
     display.setTextColor(SSD1306_WHITE);
+    
+    // Center "EMERGENCY!" (size 2, width 120px)
+    display.setTextSize(2);
+    display.setCursor(4, 12);
     display.println("EMERGENCY!");
-    display.setCursor(0, 45);
+    
+    // Center "FALL DETECTED!" (size 1, width 84px)
+    display.setTextSize(1);
+    display.setCursor(22, 38);
     display.println("FALL DETECTED!");
     display.display();
 }
@@ -93,8 +98,14 @@ void OledDisplay::showReminder(const char *medicine, const char *time) {
     display.setCursor(0, 0);
     display.println("DRUG REMINDER:");
     
-    display.setTextSize(2);
-    display.setCursor(0, 16);
+    int len = strlen(medicine);
+    if (len > 10) {
+        display.setTextSize(1); // Smaller font for long medicine names
+        display.setCursor(0, 20);
+    } else {
+        display.setTextSize(2);
+        display.setCursor(0, 16);
+    }
     display.println(medicine);
     
     display.setTextSize(1);
