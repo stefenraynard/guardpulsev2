@@ -252,3 +252,8 @@ uint8_t Bmi160Agent::getAccelPowerMode() const {
     return bmi160Dev.accel_cfg.power;
 }
 
+void Bmi160Agent::clearFall() {
+    _isFall = false;
+    _fallState = STATE_MONITOR_ACCEL;
+}
+

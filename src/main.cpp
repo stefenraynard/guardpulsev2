@@ -14,7 +14,7 @@
 #define I2C_SCL 9
 
 // WiFi credentials
-#define WIFI_SSID "E948"
+#define WIFI_SSID "TelAviv"
 #define WIFI_PASSWORD "123456789"
 
 // Firebase credentials (from Firebase Console → Project Settings)
@@ -63,6 +63,9 @@ struct SensorData_t {
     float gyroZ = 0.0f;
     uint32_t rawIr = 0;
     uint32_t rawRed = 0;
+    bool hasReminder = false;
+    String reminderMedicine = "";
+    String reminderTime = "";
 };
 SensorData_t sharedData;
 
@@ -76,6 +79,9 @@ void setupWiFi() {
     
     // Set WiFi output power to 10 dBm to stabilize signal and avoid I2C interference.
     WiFi.setTxPower((wifi_power_t)40);
+
+    // Configure public DNS servers (Google and Cloudflare) to prevent router DNS lookup issues
+    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
 
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.print("Connecting to WiFi");
@@ -272,6 +278,9 @@ void vDisplayTask(void *pvParameters) {
     float localSpo2 = 0.0f;
     bool localIsFall = false;
     uint32_t localRawIr = 0;
+    bool localHasReminder = false;
+    String localReminderMedicine = "";
+    String localReminderTime = "";
 
     for (;;) {
         // 1. Copy shared data locally (requires data mutex)
@@ -280,6 +289,9 @@ void vDisplayTask(void *pvParameters) {
             localSpo2 = sharedData.spo2;
             localIsFall = sharedData.isFall;
             localRawIr = sharedData.rawIr;
+            localHasReminder = sharedData.hasReminder;
+            localReminderMedicine = sharedData.reminderMedicine;
+            localReminderTime = sharedData.reminderTime;
             xSemaphoreGive(dataMutex);
         }
 
@@ -291,6 +303,8 @@ void vDisplayTask(void *pvParameters) {
                     oled.showMessage(msg.c_str());
                 } else if (bmi160Enabled && localIsFall) {
                     oled.showEmergency();
+                } else if (localHasReminder) {
+                    oled.showReminder(localReminderMedicine.c_str(), localReminderTime.c_str());
                 } else if (max30102Enabled && localRawIr < 20000) {
                     oled.showMessage("Please wear \nthe device...");
                 } else {
@@ -327,6 +341,76 @@ void vFirebaseUploadTask(void *pvParameters) {
                 setupFirebase();
             }
             checkDeviceStatus();
+
+            // Read watch commands from Firebase if paired
+            if (firebaseReady && Firebase.ready() && ownerUID != "" && ownerUID != "null") {
+                String commandsPath = "/users/" + ownerUID + "/devices_data/" + deviceUID + "/watch_commands";
+                if (Firebase.getJSON(fbdo, commandsPath)) {
+                    FirebaseJsonData jsonData;
+                    FirebaseJson &jsonObj = fbdo.jsonObject();
+                    
+                    // A. Check for fall dismissal
+                    if (jsonObj.get(jsonData, "/fall_alert/active")) {
+                        if (jsonData.type == "boolean" && !jsonData.boolValue) {
+                            if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                                if (sharedData.isFall) {
+                                    sharedData.isFall = false;
+                                    fallSensor.clearFall();
+                                    Serial.println("[Firebase] Fall alert dismissed by app command.");
+                                }
+                                xSemaphoreGive(dataMutex);
+                            }
+                        }
+                    }
+                    
+                    // B. Check for medicine reminder (displayed for 15 seconds)
+                    if (jsonObj.get(jsonData, "/medicine_reminder/active")) {
+                        if (jsonData.type == "boolean" && jsonData.boolValue) {
+                            double triggeredAt_ms = 0.0;
+                            if (jsonObj.get(jsonData, "/medicine_reminder/triggeredAt")) {
+                                triggeredAt_ms = jsonData.doubleValue;
+                            }
+                            
+                            time_t now = time(nullptr);
+                            long elapsedSeconds = (long)now - (long)(triggeredAt_ms / 1000.0);
+                            
+                            // Display for 15 seconds
+                            if (elapsedSeconds >= 0 && elapsedSeconds < 15) {
+                                String medName = "";
+                                String medTime = "";
+                                if (jsonObj.get(jsonData, "/medicine_reminder/medicine")) {
+                                    medName = jsonData.stringValue;
+                                }
+                                if (jsonObj.get(jsonData, "/medicine_reminder/time")) {
+                                    medTime = jsonData.stringValue;
+                                }
+                                
+                                if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                                    sharedData.hasReminder = true;
+                                    sharedData.reminderMedicine = medName;
+                                    sharedData.reminderTime = medTime;
+                                    xSemaphoreGive(dataMutex);
+                                }
+                            } else {
+                                if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                                    sharedData.hasReminder = false;
+                                    xSemaphoreGive(dataMutex);
+                                }
+                            }
+                        } else {
+                            if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                                sharedData.hasReminder = false;
+                                xSemaphoreGive(dataMutex);
+                            }
+                        }
+                    } else {
+                        if (xSemaphoreTake(dataMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+                            sharedData.hasReminder = false;
+                            xSemaphoreGive(dataMutex);
+                        }
+                    }
+                }
+            }
         }
 
         // 2. Copy sensor data locally

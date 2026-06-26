@@ -85,3 +85,20 @@ void OledDisplay::showEmergency() {
     display.println("FALL DETECTED!");
     display.display();
 }
+
+void OledDisplay::showReminder(const char *medicine, const char *time) {
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("DRUG REMINDER:");
+    
+    display.setTextSize(2);
+    display.setCursor(0, 16);
+    display.println(medicine);
+    
+    display.setTextSize(1);
+    display.setCursor(0, 48);
+    display.printf("Time: %s", time);
+    display.display();
+}

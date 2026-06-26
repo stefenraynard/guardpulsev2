@@ -29,6 +29,8 @@ public:
 
     void showEmergency();
 
+    void showReminder(const char *medicine, const char *time);
+
 private:
     Adafruit_SSD1306 display;
 };

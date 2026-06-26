@@ -40,6 +40,7 @@ public:
     bool setPowerModes(uint8_t accelPower, uint8_t gyroPower);
     uint8_t getGyroPowerMode() const;
     uint8_t getAccelPowerMode() const;
+    void clearFall();
 
 private:
     struct bmi160_dev bmi160Dev;
