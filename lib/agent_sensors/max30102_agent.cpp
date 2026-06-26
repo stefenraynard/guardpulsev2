@@ -185,14 +185,14 @@ bool Max30102Agent::readRaw(uint32_t &ir, uint32_t &red) {
                                   correl, ratio, n_heart_rate, ch_hr_valid, n_spo2, ch_spo2_valid);
                     
                     if (ch_hr_valid) {
-                        if (lastBpm == 0) {
+                        if (lastBpm <= 0) {
                             lastBpm = n_heart_rate;
                         } else {
                             lastBpm = (int32_t)(0.8f * (float)lastBpm + 0.2f * (float)n_heart_rate);
                         }
                     }
                     if (ch_spo2_valid) {
-                        if (lastSpo2 == 0.0f) {
+                        if (lastSpo2 <= 0.0f) {
                             lastSpo2 = n_spo2;
                         } else {
                             lastSpo2 = 0.8f * lastSpo2 + 0.2f * n_spo2;

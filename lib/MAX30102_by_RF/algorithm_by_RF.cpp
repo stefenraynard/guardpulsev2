@@ -117,8 +117,16 @@ void rf_heart_rate_and_oxygen_saturation(uint32_t *pun_ir_buffer, int32_t n_ir_b
 
   // After trend removal, the mean represents DC level
   xy_ratio= (f_y_ac*f_ir_mean)/(f_x_ac*f_red_mean);  //formula is (f_y_ac*f_x_dc) / (f_x_ac*f_y_dc) ;
-  if(xy_ratio>0.02 && xy_ratio<1.84) { // Check boundaries of applicability
-    *pn_spo2 = (-45.060*xy_ratio + 30.354)*xy_ratio + 94.845;
+
+  // Print the raw calibration components for diagnostics
+  Serial.printf("[RF algorithm] Ratio R = %.3f, Red AC (f_y_ac) = %.3f, IR AC (f_x_ac) = %.3f, Red DC (f_red_mean) = %.1f, IR DC (f_ir_mean) = %.1f\n", 
+                xy_ratio, f_y_ac, f_x_ac, f_red_mean, f_ir_mean);
+
+  if(xy_ratio>0.02 && xy_ratio<2.4) { // Check boundaries of applicability (extended to 2.4 for wrist)
+    float spo2_val = 110.0 - 8.0 * xy_ratio;
+    if (spo2_val > 100.0) spo2_val = 100.0;
+    if (spo2_val < 50.0) spo2_val = 50.0;
+    *pn_spo2 = spo2_val;
     *pch_spo2_valid = 1;
   } else {
     *pn_spo2 =  -999 ; // do not use SPO2 since signal an_ratio is out of range
